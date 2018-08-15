@@ -776,7 +776,7 @@
                                    (lambda (facet)
                                      (foo (rest mats)
                                           (cons facet facets)))))))
-    
+
     (array-to-mat (foo mats ()) :ctype ctype)))
 
 
@@ -921,6 +921,62 @@
        x)))
 
 
+(defun broadcast-row-major-index (strides result-position size start)
+  (declare (type (simple-array index (*)) strides result-position)
+           (type index size start)
+           (optimize (speed 3) (debug 0) (space 0) (safety 0)))
+  (let ((sum 0)
+        (multiplier size))
+    (loop for index of-type index across result-position
+          for dimension of-type index across strides
+          unless (zerop dimension)
+            do (setq multiplier (the! index (/ multiplier dimension)))
+               (setq sum (the! index (+ sum (the! index (* multiplier index))))))
+    (the! index (+ start sum))))
+
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defmacro define-broadcasting-lisp-kernel (name (a b) &body body)
+    `(define-lisp-kernel (,name)
+         ((a :mat :input) (a-start index)
+          (a-size index) (a-strides (vector index))
+          (b :mat :input) (b-start index)
+          (b-size index) (b-strides (vector index))
+          (c :mat :output) (c-start index)
+          (c-size index) (c-strides (vector index)))
+       (let* ((max (length c-strides))
+              (old 0)
+              (c-position (make-array max
+                                      :element-type 'index
+                                      :initial-element 0)))
+         (declare (type index max)
+                  (type (vector index) c-position))
+         (loop repeat c-size
+               do (let* ((c-index (broadcast-row-major-index c-strides
+                                                             c-position
+                                                             c-size
+                                                             c-start))
+                         (,a (aref a (broadcast-row-major-index a-strides
+                                                                c-position
+                                                                a-size
+                                                                a-start)))
+                         (,b (aref b (broadcast-row-major-index b-strides
+                                                                c-position
+                                                                b-size
+                                                                b-start))))
+                    (setf (aref c c-index) (progn ,@body)))
+                  (block nil
+                    (loop for i of-type index upfrom 0 below max
+                          unless (eql (the! index (1+ (aref c-position i)))
+                                      (aref c-strides i))
+                            do (the! index (incf (aref c-position i)))
+                               (unless (eql i old)
+                                 (loop for j of-type index upfrom 0 below i
+                                       do (setf (aref c-position j) 0))
+                                 (setf old i))
+                               (return))))))))
+
+
 ;;;; Misc destructive operations
 
 (defsection @mat-destructive-api (:title "Destructive API")
@@ -1047,6 +1103,94 @@
 
 (defun .*! (x y)
   (geem! 1 x y 0 y))
+
+(defun geed! (alpha a b c)
+  (let* ((n (mat-size a))
+         (ctype (mat-ctype a))
+         (alpha (coerce-to-ctype alpha :ctype ctype)))
+    (assert (= n (mat-size b)))
+    (assert (= n (mat-size c)))
+    (if (use-cuda-p a b c)
+        (multiple-value-bind (block-dim grid-dim) (choose-1d-block-and-grid n 4)
+          (cuda-geed! alpha a b c n
+                      :grid-dim grid-dim
+                      :block-dim block-dim))
+        (lisp-geed! alpha a (mat-displacement a)
+                    b (mat-displacement b)
+                    c (mat-displacement c)
+                    n)))
+  c)
+
+(define-cuda-kernel (cuda-geed!)
+    (void ((alpha float) (a :mat :input) (b :mat :input)
+           (c :mat :io) (n int)))
+  (let ((stride (* block-dim-x grid-dim-x)))
+    (do ((i (+ (* block-dim-x block-idx-x) thread-idx-x)
+            (+ i stride)))
+        ((>= i n))
+      (set (aref c i) (* alpha (/ (aref a i) (aref b i)))))))
+
+(define-lisp-kernel (lisp-geed!)
+    ((alpha single-float) (a :mat :input) (start-a index)
+     (b :mat :input) (start-b index)
+     (c :mat :io) (start-c index) (n index))
+  (loop for ai of-type index upfrom start-a
+          below (the! index (+ start-a n))
+        for bi of-type index upfrom start-b
+        for ci of-type index upfrom start-c
+        do (setf (aref c ci) (* alpha (/ (aref a ai) (aref b bi))))))
+
+(export 'geed!)
+
+(define-broadcasting-lisp-kernel lisp-br*! (a b)
+  (* a b))
+
+(defun broadcast-strides (a b)
+  (let* ((a-dims (mat-dimensions a))
+         (b-dims (mat-dimensions b))
+         (a-dims-vect (map '(vector index) #'identity a-dims))
+         (b-dims-vect (map '(vector index) #'identity b-dims))
+         (c-dims-vect (map '(vector index)
+                           #'max
+                           a-dims-vect b-dims-vect)))
+    (assert (eql (length a-dims-vect)
+                 (length b-dims-vect)))
+    (loop for i of-type index from 0 below (length a-dims-vect)
+          do (progn (assert (or (eql (aref a-dims-vect i) 1)
+                                (eql (aref b-dims-vect i) 1)
+                                (eql (aref b-dims-vect i)
+                                     (aref a-dims-vect i))))
+                    (when (eql 1 (aref a-dims-vect i))
+                      (setf (aref a-dims-vect i) 0))
+                    (when (eql 1 (aref b-dims-vect i))
+                      (setf (aref b-dims-vect i) 0))))
+    (values a-dims-vect b-dims-vect c-dims-vect)))
+
+(defun broadcast-result-size (a b)
+  (let ((dims-a (mat-dimensions a))
+        (dims-b (mat-dimensions b))
+        (result 1))
+    (loop for da of-type index in dims-a
+          for db of-type index in dims-b
+          do (setf result (* result (max da db))))
+    result))
+
+(defun br*! (a b c)
+  (assert (eql (broadcast-result-size a b)
+               (- (mat-size c) (mat-displacement c))))
+  (multiple-value-bind (a-strides b-strides c-strides)
+      (broadcast-strides a b)
+    (lisp-br*! a (mat-displacement a)
+               (mat-size a) a-strides
+
+               b (mat-displacement b)
+               (mat-size b) b-strides
+
+               c (mat-displacement c)
+               (mat-size c) c-strides))
+  c)
+
+(export 'br*!)
 
 (defun geem! (alpha a b beta c)
   "Like GEMM!, but multiplication is elementwise. This is not a
@@ -1674,7 +1818,7 @@
     c))
 
 (defun mm* (m &rest args)
-  "Convenience function to multiply several matrices. 
+  "Convenience function to multiply several matrices.
 
   (mm* a b c) => a * b * c"
   (declare (optimize speed)
@@ -1778,9 +1922,9 @@
     (reshape-and-displace! mat '(4 3) 1)
     (map-displacements #'print mat 4))
   ..
-  .. #<MAT 1+4+9 B #(0.0d0 1.0d0 2.0d0 3.0d0)> 
-  .. #<MAT 5+4+5 B #(4.0d0 5.0d0 6.0d0 7.0d0)> 
-  .. #<MAT 9+4+1 B #(8.0d0 9.0d0 10.0d0 11.0d0)> 
+  .. #<MAT 1+4+9 B #(0.0d0 1.0d0 2.0d0 3.0d0)>
+  .. #<MAT 5+4+5 B #(4.0d0 5.0d0 6.0d0 7.0d0)>
+  .. #<MAT 9+4+1 B #(8.0d0 9.0d0 10.0d0 11.0d0)>
   ```"
   (let ((displacement-step
           (or displacement-step
@@ -1794,6 +1938,24 @@
             do (displace! mat (+ displacement d))
                (funcall fn mat))))
   mat)
+
+(defun reduce-mat (fn mat &key key (initial-value nil initial-value-bound))
+  (let* ((n (mat-size mat))
+         (value initial-value)
+         (first-call t))
+    (with-facets ((a (mat 'array :direction :input)))
+      (dotimes (i n)
+        (if (and first-call initial-value-bound)
+            (setf first-call nil
+                  value (funcall fn value #1=(if key
+                                                 (funcall key (row-major-aref a i))
+                                                 (row-major-aref a i))))
+            (if first-call
+                (setf first-call nil
+                      value #1#)
+                (setf value (funcall fn value #1#))))))
+    value))
+(export 'reduce-mat)
 
 (defun map-mats-into (result-mat fn &rest mats)
   "Like CL:MAP-INTO but for MAT objects. Destructively modifies
@@ -2116,7 +2278,7 @@
    (with-facets ((x* (x 'backing-array :direction :output)))
      (fill x* 1 :start displacement :end (+ displacement size))))
   ```
- 
+
   DIRECTION is :OUTPUT because we clobber all values in `X`. Armed
   with this knowledge about the direction, WITH-FACETS will not copy
   data from another facet if the backing array is not up-to-date.
