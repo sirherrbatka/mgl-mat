@@ -921,20 +921,39 @@
        x)))
 
 
-(defun broadcast-row-major-index (strides result-position size start)
-  (declare (type (simple-array index (*)) strides result-position)
-           (type index size start)
+(defun broadcast-row-major-index (strides-a size-a start-a
+                                  strides-b size-b start-b
+                                  strides-c size-c start-c
+                                  result-position)
+  (declare (type (simple-array index (*)) strides-a strides-b strides-c
+                 result-position)
+           (type index size-a size-b size-c start-a start-b start-c)
            (optimize (speed 3) (debug 0) (space 0) (safety 0)))
-  (let ((sum 0)
-        (multiplier size))
-    (declare (type index multiplier sum))
-    (loop for index of-type index across result-position
-          for dimension of-type index across strides
-          unless (zerop dimension)
-            do (setq multiplier (floor (the fixnum multiplier)
-                                       (the fixnum dimension)))
-               (setq sum (the! index (+ sum (the! index (* multiplier index))))))
-    (the! index (+ start sum))))
+  (let ((sum-a 0)
+        (multiplier-a size-a)
+        (sum-b 0)
+        (multiplier-b size-b)
+        (sum-c 0)
+        (multiplier-c size-c))
+    (declare (type index
+                   multiplier-a sum-a
+                   multiplier-b sum-b
+                   multiplier-c sum-c))
+    (macrolet ((up (multiplier sum dimension)
+                 `(unless (zerop ,dimension)
+                    (setf ,multiplier (floor (the index ,multiplier)
+                                             (the index ,dimension))
+                          ,sum (the! index (+ ,sum (the! index (* ,multiplier index))))))))
+      (loop for index of-type index across result-position
+            for dimension-a of-type index across strides-a
+            for dimension-b of-type index across strides-b
+            for dimension-c of-type index across strides-c
+            do (up multiplier-a sum-a dimension-a)
+               (up multiplier-b sum-b dimension-b)
+               (up multiplier-c sum-c dimension-c)))
+    (values (the! index (+ start-a sum-a))
+            (the! index (+ start-b sum-b))
+            (the! index (+ start-c sum-c)))))
 
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -954,19 +973,14 @@
          (declare (type index max)
                   (type (vector index) c-position))
          (loop repeat c-size
-               do (let* ((c-index (broadcast-row-major-index c-strides
-                                                             c-position
-                                                             c-size
-                                                             c-start))
-                         (,a (aref a (broadcast-row-major-index a-strides
-                                                                c-position
-                                                                a-size
-                                                                a-start)))
-                         (,b (aref b (broadcast-row-major-index b-strides
-                                                                c-position
-                                                                b-size
-                                                                b-start))))
-                    (setf (aref c c-index) (progn ,@body)))
+               do (multiple-value-bind (a-index b-index c-index)
+                      (broadcast-row-major-index a-strides a-size a-start
+                                                 b-strides b-size b-start
+                                                 c-strides c-size c-start
+                                                 c-position)
+                    (let* ((,a (aref a a-index))
+                           (,b (aref b b-index)))
+                      (setf (aref c c-index) (progn ,@body))))
                   (block nil
                     (loop for i of-type index upfrom 0 below max
                           unless (eql (the! index (1+ (aref c-position i)))
