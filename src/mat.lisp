@@ -1146,6 +1146,8 @@
   (* a b))
 
 (defun broadcast-strides (a b)
+  (check-type a mat)
+  (check-type b mat)
   (let* ((a-dims (mat-dimensions a))
          (b-dims (mat-dimensions b))
          (a-dims-vect (map '(vector index) #'identity a-dims))
