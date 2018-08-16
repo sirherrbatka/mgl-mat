@@ -474,7 +474,7 @@
              (type index sum multiplier))
     (loop for index of-type index in subscripts
           for dimension of-type index in (mat-dimensions mat)
-          do (setq multiplier (/ multiplier dimension))
+          do (setq multiplier (the! index (floor multiplier dimension)))
              (setq sum (the! index (+ sum (the! index (* multiplier index))))))
     sum))
 
@@ -927,10 +927,12 @@
            (optimize (speed 3) (debug 0) (space 0) (safety 0)))
   (let ((sum 0)
         (multiplier size))
+    (declare (type index multiplier sum))
     (loop for index of-type index across result-position
           for dimension of-type index across strides
           unless (zerop dimension)
-            do (setq multiplier (the! index (/ multiplier dimension)))
+            do (setq multiplier (floor (the fixnum multiplier)
+                                       (the fixnum dimension)))
                (setq sum (the! index (+ sum (the! index (* multiplier index))))))
     (the! index (+ start sum))))
 
@@ -939,11 +941,11 @@
   (defmacro define-broadcasting-lisp-kernel (name (a b) &body body)
     `(define-lisp-kernel (,name)
          ((a :mat :input) (a-start index)
-          (a-size index) (a-strides (vector index))
+          (a-size index) (a-strides (simple-array index (*)))
           (b :mat :input) (b-start index)
-          (b-size index) (b-strides (vector index))
+          (b-size index) (b-strides (simple-array index (*)))
           (c :mat :output) (c-start index)
-          (c-size index) (c-strides (vector index)))
+          (c-size index) (c-strides (simple-array index (*))))
        (let* ((max (length c-strides))
               (old 0)
               (c-position (make-array max
