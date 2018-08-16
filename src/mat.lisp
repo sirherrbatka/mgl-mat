@@ -944,7 +944,9 @@
                  `(unless (zerop ,dimension)
                     (setf ,multiplier (truncate (the index ,multiplier)
                                                 (the index ,dimension))
-                          ,sum (the! index (+ ,sum (the! index (* ,multiplier index))))))))
+                          ,sum (the! index (+ ,sum
+                                              (the! index (* ,multiplier
+                                                             index))))))))
       (loop for index of-type index across result-position
             for dimension-a of-type index across strides-a
             for dimension-b of-type index across strides-b
