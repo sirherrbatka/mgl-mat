@@ -1190,7 +1190,8 @@
           (broadcast-strides a b)
           (values a-strides b-strides
                   (if (null c-strides)
-                      (coerce (mat-dimensions c) '(simple-array index (*))))))
+                      (coerce (mat-dimensions c) '(simple-array index (*)))
+                      c-strides)))
     (declare (type (simple-array index (*)) a-strides b-strides c-strides))
     (assert (= (length c-strides) (length a-strides) (length c-strides)))
     (assert (every (lambda (c a b)
