@@ -1156,14 +1156,14 @@
     (assert (eql (length a-dims-vect)
                  (length b-dims-vect)))
     (loop for i of-type index from 0 below (length a-dims-vect)
-          do (progn (assert (or (eql (aref a-dims-vect i) 1)
-                                (eql (aref b-dims-vect i) 1)
-                                (eql (aref b-dims-vect i)
-                                     (aref a-dims-vect i))))
-                    (when (eql 1 (aref a-dims-vect i))
-                      (setf (aref a-dims-vect i) 0))
-                    (when (eql 1 (aref b-dims-vect i))
-                      (setf (aref b-dims-vect i) 0))))
+          do (assert (or (eql (aref a-dims-vect i) 1)
+                         (eql (aref b-dims-vect i) 1)
+                         (eql (aref b-dims-vect i)
+                              (aref a-dims-vect i))))
+             (when (eql 1 (aref a-dims-vect i))
+               (setf (aref a-dims-vect i) 0))
+             (when (eql 1 (aref b-dims-vect i))
+               (setf (aref b-dims-vect i) 0)))
     (values a-dims-vect b-dims-vect c-dims-vect)))
 
 (defun broadcast-result-size (a b)
@@ -1175,11 +1175,29 @@
           do (setf result (* result (max da db))))
     result))
 
-(defun br*! (a b c)
+(defun br*! (a b c &key a-strides b-strides c-strides)
+  (check-type a-strides (or null (simple-array index (*))))
+  (check-type b-strides (or null (simple-array index (*))))
+  (check-type c-strides (or null (simple-array index (*))))
   (assert (eql (broadcast-result-size a b)
                (- (mat-size c) (mat-displacement c))))
+  (assert (or (and (null a-strides) (null b-strides))
+              (and a-strides b-strides)))
   (multiple-value-bind (a-strides b-strides c-strides)
-      (broadcast-strides a b)
+      (if (null a-strides)
+          (broadcast-strides a b)
+          (values a-strides b-strides
+                  (if (null c-strides)
+                      (coerce (mat-dimensions c) '(simple-array index (*))))))
+    (declare (type (simple-array index (*)) a-strides b-strides c-strides))
+    (assert (= (length c-strides) (length a-strides) (length c-strides)))
+    (assert (every (lambda (c a b)
+                     (and (not (eql 1 a))
+                          (not (eql 1 b))
+                          (eql c (max a b))))
+                   c-strides
+                   a-strides
+                   b-strides))
     (lisp-br*! a (mat-displacement a)
                (mat-size a) a-strides
 
@@ -1191,6 +1209,7 @@
   c)
 
 (export 'br*!)
+(export 'broadcast-strides)
 
 (defun geem! (alpha a b beta c)
   "Like GEMM!, but multiplication is elementwise. This is not a
@@ -1198,7 +1217,7 @@
   (let* ((n (mat-size a))
          (ctype (mat-ctype a))
          (alpha (coerce-to-ctype alpha :ctype ctype))
-         (beta (coerce-to-ctype beta :ctype ctype)))
+         (beta (coece-to-ctype beta :ctype ctype)))
     (assert (= n (mat-size b)))
     (assert (= n (mat-size c)))
     (if (use-cuda-p a b c)
