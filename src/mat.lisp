@@ -921,6 +921,7 @@
        x)))
 
 
+(declaim (inline broadcast-row-major-index))
 (defun broadcast-row-major-index (strides-a size-a start-a
                                   strides-b size-b start-b
                                   strides-c size-c start-c
@@ -941,8 +942,8 @@
                    multiplier-c sum-c))
     (macrolet ((up (multiplier sum dimension)
                  `(unless (zerop ,dimension)
-                    (setf ,multiplier (floor (the index ,multiplier)
-                                             (the index ,dimension))
+                    (setf ,multiplier (truncate (the index ,multiplier)
+                                                (the index ,dimension))
                           ,sum (the! index (+ ,sum (the! index (* ,multiplier index))))))))
       (loop for index of-type index across result-position
             for dimension-a of-type index across strides-a
